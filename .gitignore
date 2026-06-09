@@ -1,0 +1,31 @@
+# Virtual environment
+.venv/
+lib/
+lib64
+share/
+pyvenv.cfg
+.lock
+CACHEDIR.TAG
+
+# Python caching
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Weights & Biases logs
+wandb/
+
+# Local model checkpoint saves
+models/
+
+# Dataset split outputs
+data/raw_jobs.jsonl
+data/train.jsonl
+data/val.jsonl
+
+# Evaluation and benchmark results
+eval/results.json
+benchmarks/results/
+logs/
+.ipynb_checkpoints/
