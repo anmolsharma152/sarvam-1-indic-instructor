@@ -10,14 +10,23 @@ import os
 import sys
 import argparse
 import torch
+
+# Unsloth must be imported before trl/transformers/peft to apply patches
+try:
+    from unsloth import FastLanguageModel
+    _UNSLOTH_AVAILABLE = True
+except ImportError:
+    _UNSLOTH_AVAILABLE = False
+
 from datasets import load_dataset
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
-    BitsAndBytesConfig
+    BitsAndBytesConfig,
+    TrainingArguments,
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-from trl import SFTTrainer, SFTConfig
+from trl import SFTTrainer
 
 def main():
     parser = argparse.ArgumentParser(description="Fine-tune Sarvam-1 on Job Descriptions")
@@ -81,7 +90,8 @@ def main():
     # --- MODEL & TOKENIZER LOADING BRANCH ---
     if use_unsloth:
         print(f"Initializing Unsloth FastLanguageModel for: {model_id}...")
-        from unsloth import FastLanguageModel
+        if not _UNSLOTH_AVAILABLE:
+            raise ImportError("Unsloth is not installed. Install it: pip install unsloth")
 
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name=model_id,
@@ -130,8 +140,7 @@ def main():
             task_type="CAUSAL_LM"
         )
 
-    # Prepare SFTTrainer arguments using SFTConfig
-    training_args = SFTConfig(
+    training_args = TrainingArguments(
         output_dir=args.output_dir,
         num_train_epochs=epochs,
         max_steps=max_steps,
@@ -154,21 +163,17 @@ def main():
         report_to="wandb",
         run_name=f"sarvam-job-desc-{device}" if not args.dry_run else "sarvam-job-desc-dry-run",
         logging_dir="./logs",
-        
-        # SFT specific configurations
-        max_length=512 if args.dry_run else 2048,
-        packing=False,
-        completion_only_loss=True,
     )
     
     print("Initializing SFTTrainer...")
     trainer = SFTTrainer(
         model=model,
-        tokenizer=tokenizer if use_unsloth else None,  # Unsloth prefers tokenizer passed here
+        tokenizer=tokenizer if use_unsloth else None,
         train_dataset=dataset["train"],
         eval_dataset=dataset["validation"],
         peft_config=peft_config,
         args=training_args,
+        max_seq_length=512 if args.dry_run else 2048,
     )
     
     print("Starting training...")
