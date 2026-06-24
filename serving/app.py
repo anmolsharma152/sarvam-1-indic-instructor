@@ -23,7 +23,6 @@ from schema import InferenceRequest, InferenceResponse, StreamToken
 try:
     import vllm
     from vllm import AsyncLLMEngine, AsyncEngineArgs, SamplingParams
-    from vllm.lora.request import LoRARequest
     VLLM_AVAILABLE = True
 except ImportError:
     VLLM_AVAILABLE = False
@@ -69,13 +68,10 @@ async def startup_event():
     if args is None:
         parser = argparse.ArgumentParser()
         parser.add_argument("--model", type=str, default="sarvamai/sarvam-1")
-        parser.add_argument("--adapter", type=str, default=None)
         parser.add_argument("--force_hf", action="store_true")
         args, _ = parser.parse_known_args()
         
     print(f"Loading weights with model path/id: {args.model}")
-    if args.adapter:
-        print(f"Loading PEFT adapter checkpoint: {args.adapter}")
         
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
@@ -85,9 +81,7 @@ async def startup_event():
         engine_type = "vllm"
         engine_args = AsyncEngineArgs(
             model=args.model,
-            enable_lora=(args.adapter is not None),
-            max_loras=1 if args.adapter else 0,
-            max_model_len=1024,
+            max_model_len=2048,
             trust_remote_code=True
         )
         vllm_engine = AsyncLLMEngine.from_engine_args(engine_args)
@@ -114,12 +108,7 @@ async def startup_event():
                 torch_dtype=torch.float32,
                 trust_remote_code=True
             )
-            
-        if args.adapter:
-            from peft import PeftModel
-            print("Applying PEFT/LoRA adapter weights to HF model...")
-            hf_model = PeftModel.from_pretrained(hf_model, args.adapter)
-            
+
         # Ensure model is in evaluation mode
         hf_model.eval()
         
@@ -169,16 +158,10 @@ async def vllm_stream_generator(prompt: str, req: InferenceRequest):
     )
     request_id = str(uuid.uuid4())
     
-    lora_request = None
-    if args.adapter:
-        # ID 1, mapping to adapter folder
-        lora_request = LoRARequest("job_desc_adapter", 1, args.adapter)
-        
     results_generator = vllm_engine.generate(
         formatted_prompt, 
         sampling_params, 
         request_id, 
-        lora_request=lora_request
     )
     
     last_text_len = 0
@@ -226,15 +209,10 @@ async def generate(req: InferenceRequest):
         )
         request_id = str(uuid.uuid4())
         
-        lora_request = None
-        if args.adapter:
-            lora_request = LoRARequest("job_desc_adapter", 1, args.adapter)
-            
         results_generator = vllm_engine.generate(
             formatted_prompt, 
             sampling_params, 
             request_id, 
-            lora_request=lora_request
         )
         
         final_output = None
@@ -277,8 +255,7 @@ async def health():
 def main():
     global args
     parser = argparse.ArgumentParser(description="Start FastAPI serving engine")
-    parser.add_argument("--model", type=str, default="sarvamai/sarvam-1", help="Path or Hugging Face ID of the base model")
-    parser.add_argument("--adapter", type=str, default=None, help="Path to LoRA adapter weights (optional)")
+    parser.add_argument("--model", type=str, default="sarvamai/sarvam-1", help="Path or Hugging Face ID of the base model (or merged 16-bit checkpoint)")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Host address to bind")
     parser.add_argument("--port", type=int, default=8000, help="Port to run server on")
     parser.add_argument("--force_hf", action="store_true", help="Force HF Transformers engine even if vLLM is available")

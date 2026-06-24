@@ -26,3 +26,7 @@ matplotlib>=3.7.0
 
 # Optional GPU deployment serving
 # vllm>=0.4.0
+
+# Unsloth fast LoRA training + inference kernels
+unsloth>=2024.11.0
+xformers>=0.0.27

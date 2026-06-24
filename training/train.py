@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
+
 """
 train.py
-Fine-tunes microsoft/phi-2 on the processed job description dataset using LoRA.
-Includes a CPU dry-run mode using a tiny model for local testing.
+Fine-tunes Sarvam-1 on the processed job description dataset using LoRA.
+Optimized with Unsloth for GPU execution; includes a standard HF CPU dry-run fallback.
 """
+
 import os
 import sys
 import argparse
@@ -43,6 +45,8 @@ def main():
     epochs = args.epochs
     max_steps = -1
     
+    use_unsloth = (device == "cuda" and not args.dry_run)
+
     if args.dry_run or device == "cpu":
         print("\n" + "="*80)
         print("WARNING: Running in DRY-RUN / CPU MODE.")
@@ -74,56 +78,58 @@ def main():
         
     print(f"Dataset loaded. Train size: {len(dataset['train'])}, Val size: {len(dataset['validation'])}")
     
-    # Tokenizer Setup
-    print(f"Loading tokenizer for {model_id}...")
-    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "right"
-    
-    # Model Loading with optional quantization
-    print(f"Loading model: {model_id}...")
-    bnb_config = None
-    
-    # Use quantization only if CUDA is available and we are NOT in dry-run
-    if device == "cuda" and not args.dry_run:
-        print("Initializing 4-bit quantization config (QLoRA)...")
-        bnb_config = BitsAndBytesConfig(
+    # --- MODEL & TOKENIZER LOADING BRANCH ---
+    if use_unsloth:
+        print(f"Initializing Unsloth FastLanguageModel for: {model_id}...")
+        from unsloth import FastLanguageModel
+
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name=model_id,
+            max_seq_length=2048,
             load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.float16,
-            bnb_4bit_use_double_quant=True
+            trust_remote_code=True
         )
         
-    model = AutoModelForCausalLM.from_pretrained(
-        model_id,
-        quantization_config=bnb_config,
-        device_map="auto" if device == "cuda" else None,
-        trust_remote_code=True
-    )
-    
-    if device == "cuda":
-        model = prepare_model_for_kbit_training(model)
+        print("Injecting optimized Unsloth LoRA parameters...")
+        model = FastLanguageModel.get_peft_model(
+            model,
+            r=args.lora_r,
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+            lora_alpha=args.lora_alpha,
+            lora_dropout=0,  # Unsloth optimizes this to 0 for raw training speed acceleration
+            bias="none",
+            use_gradient_checkpointing="unsloth",
+            random_state=3407,
+        )
+        peft_config = None  # Handled natively by Unsloth
         
-    # LoRA Config Setup
-    # Targets vary by model architecture
-    if "phi" in model_id.lower():
-        target_modules = ["Wqkv", "out_proj", "fc1", "fc2"]
-    elif "gpt2" in model_id.lower():
-        target_modules = ["c_attn", "c_proj"]
     else:
-        target_modules = ["q_proj", "v_proj", "k_proj", "o_proj"]
+        # Standard Hugging Face CPU/Dry-Run pipeline fallback
+        print(f"Loading standard fallback tokenizer for {model_id}...")
+        tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.padding_side = "right"
         
-    print(f"Configuring LoRA PEFT targeting: {target_modules}")
-    peft_config = LoraConfig(
-        r=args.lora_r,
-        lora_alpha=args.lora_alpha,
-        target_modules=target_modules,
-        lora_dropout=args.lora_dropout,
-        bias="none",
-        task_type="CAUSAL_LM"
-    )
-    
+        print(f"Loading standard fallback model: {model_id}...")
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            quantization_config=None,
+            device_map=None,
+            trust_remote_code=True
+        )
+
+        target_modules = ["c_attn", "c_proj"] if "gpt2" in model_id.lower() else ["q_proj", "v_proj", "k_proj", "o_proj"]
+        print(f"Configuring standard LoRA PEFT targeting: {target_modules}")
+        peft_config = LoraConfig(
+            r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            target_modules=target_modules,
+            lora_dropout=args.lora_dropout,
+            bias="none",
+            task_type="CAUSAL_LM"
+        )
+
     # Prepare SFTTrainer arguments using SFTConfig
     training_args = SFTConfig(
         output_dir=args.output_dir,
@@ -142,14 +148,15 @@ def main():
         load_best_model_at_end=True if max_steps == -1 else False,
         metric_for_best_model="loss",
         greater_is_better=False,
-        fp16=(device == "cuda"),
+        fp16=(device == "cuda" and not torch.cuda.is_bf16_supported()),
+        bf16=(device == "cuda" and torch.cuda.is_bf16_supported()),
         use_cpu=(device == "cpu"),
         report_to="wandb",
         run_name=f"sarvam-job-desc-{device}" if not args.dry_run else "sarvam-job-desc-dry-run",
         logging_dir="./logs",
         
         # SFT specific configurations
-        max_length=512,
+        max_length=512 if args.dry_run else 2048,
         packing=False,
         completion_only_loss=True,
     )
@@ -157,6 +164,7 @@ def main():
     print("Initializing SFTTrainer...")
     trainer = SFTTrainer(
         model=model,
+        tokenizer=tokenizer if use_unsloth else None,  # Unsloth prefers tokenizer passed here
         train_dataset=dataset["train"],
         eval_dataset=dataset["validation"],
         peft_config=peft_config,
@@ -168,8 +176,16 @@ def main():
     
     # Save the adapter model weights
     print(f"Saving final adapter model weights to {args.output_dir}...")
-    trainer.model.save_pretrained(args.output_dir)
-    tokenizer.save_pretrained(args.output_dir)
+    if use_unsloth:
+        model.save_pretrained(args.output_dir)
+        tokenizer.save_pretrained(args.output_dir)
+        # Save a 16-bit merged model for direct vLLM/serving use
+        merged_dir = args.output_dir + "-merged-16bit"
+        print(f"Saving merged 16-bit model to {merged_dir}...")
+        model.save_pretrained_merged(merged_dir, tokenizer, save_method="merged_16bit")
+    else:
+        trainer.model.save_pretrained(args.output_dir)
+        tokenizer.save_pretrained(args.output_dir)
     
     print("\nTraining complete! Adapter weights successfully saved.")
 

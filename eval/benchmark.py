@@ -12,6 +12,7 @@ import json
 import argparse
 import time
 import torch
+import random
 from tqdm import tqdm
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -85,29 +86,42 @@ def main():
         model_id = "hf-internal-testing/tiny-random-gpt2"
         num_samples = 5
         
-    print(f"Loading tokenizer and model: {model_id}...")
-    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-        
-    if device == "cuda":
-        model = AutoModelForCausalLM.from_pretrained(
-            model_id,
-            device_map="auto",
-            torch_dtype=torch.float16,
-            trust_remote_code=True
+    if device == "cuda" and not args.dry_run:
+        from unsloth import FastLanguageModel
+        print(f"Loading model with Unsloth FastLanguageModel: {model_id}...")
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name=model_id,
+            max_seq_length=2048,
+            load_in_4bit=True,
+            trust_remote_code=True,
         )
+        if args.adapter:
+            print(f"Applying PEFT adapter weights from {args.adapter}...")
+            model = PeftModel.from_pretrained(model, args.adapter)
+        model = FastLanguageModel.for_inference(model)
     else:
-        model = AutoModelForCausalLM.from_pretrained(
-            model_id,
-            torch_dtype=torch.float32,
-            trust_remote_code=True
-        )
-        
-    if args.adapter and not args.dry_run:
-        print(f"Applying PEFT adapter weights from {args.adapter}...")
-        model = PeftModel.from_pretrained(model, args.adapter)
-        
+        # CPU/Dry-run fallback
+        print(f"Loading tokenizer and model (fallback): {model_id}...")
+        tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        if device == "cuda":
+            model = AutoModelForCausalLM.from_pretrained(
+                model_id,
+                device_map="auto",
+                torch_dtype=torch.float16,
+                trust_remote_code=True,
+            )
+        else:
+            model = AutoModelForCausalLM.from_pretrained(
+                model_id,
+                torch_dtype=torch.float32,
+                trust_remote_code=True,
+            )
+        if args.adapter and not args.dry_run:
+            print(f"Applying PEFT adapter weights from {args.adapter}...")
+            model = PeftModel.from_pretrained(model, args.adapter)
+
     model.eval()
     
     # Load evaluation dataset
@@ -224,7 +238,7 @@ def main():
         
     print(f"Evaluation report successfully written to {args.output}")
 
-import random # Imported for mock generation logic in dry-run mode
+
 
 if __name__ == "__main__":
     main()
