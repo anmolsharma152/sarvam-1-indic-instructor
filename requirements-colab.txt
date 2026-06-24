@@ -1,23 +1,22 @@
-# Deep learning and Hugging Face suite
-# torch, xformers, bitsandbytes, unsloth, triton -- managed by Colab + pip install unsloth
+# GPU packages (torch, xformers, bitsandbytes, unsloth) managed by unsloth install
 transformers>=4.38.0
 peft>=0.10.0
 accelerate>=0.28.0
 datasets>=2.18.0
-
-# API Serving (included for completeness)
-fastapi>=0.110.0
-uvicorn>=0.28.0
-pydantic>=2.6.0
 
 # ML Ops
 wandb>=0.16.0
 
 # Data Engineering
 requests>=2.31.0
-beautifulsoup4>=4.12.0
 pandas>=2.0.0
 scikit-learn>=1.3.0
+
+# NVIDIA NIM API
+openai>=1.0.0
+
+# Evaluation
+tqdm>=4.65.0
 
 # Visualization
 matplotlib>=3.7.0
