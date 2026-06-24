@@ -165,11 +165,6 @@ def main():
         logging_dir="./logs",
     )
     
-    # Unsloth compiled cache expects SFTConfig fields (push_to_hub_token etc.) on TrainingArguments
-    for _attr in ("push_to_hub_token", "push_to_hub_model_id", "push_to_hub_organization"):
-        if not hasattr(training_args, _attr):
-            setattr(training_args, _attr, None)
-
     print("Initializing SFTTrainer...")
     trainer = SFTTrainer(
         model=model,
