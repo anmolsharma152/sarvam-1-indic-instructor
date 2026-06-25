@@ -188,17 +188,32 @@ def main():
     parser.add_argument("--batch_size", type=int, default=10, help="Records per batch")
     parser.add_argument("--temperature", type=float, default=0.8, help="Generation temperature")
     parser.add_argument("--workers", type=int, default=10, help="Concurrent threads for API calls")
+    parser.add_argument("--resume", action="store_true", help="Resume from existing output file, appending new records")
     args = parser.parse_args()
 
     os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
 
-    print(f"Connecting to NVIDIA NIM...")
+    # Count existing records if resuming
+    existing_count = 0
+    if args.resume and os.path.exists(args.output):
+        with open(args.output, encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    existing_count += 1
+        if existing_count >= args.count:
+            print(f"Already have {existing_count}/{args.count} records. Nothing to do.")
+            return
+        print(f"Resuming: {existing_count} records exist, generating {args.count - existing_count} more")
+
     client = build_client()
 
-    print(f"Building {args.count} seed prompts...")
     seed_prompts = build_seed_prompts(args.count, args.languages, args.scripts)
 
-    print(f"Generating {args.count} records (batch_size={args.batch_size})...")
+    # Skip seeds that already have records (resume mode)
+    if existing_count > 0:
+        seed_prompts = seed_prompts[existing_count:]
+
+    print(f"Generating up to {args.count} records (batch_size={args.batch_size}, workers={args.workers})...")
     all_records = []
     with open(args.output, "a", encoding="utf-8") as f:
         for i in range(0, len(seed_prompts), args.batch_size):
@@ -208,16 +223,13 @@ def main():
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 f.flush()
             all_records.extend(records)
-            print(f"  Progress: {len(all_records)}/{args.count} records")
-            if len(all_records) >= args.count:
+            total = existing_count + len(all_records)
+            print(f"  Progress: {total}/{args.count} records")
+            if total >= args.count:
                 break
 
-    all_records = all_records[:args.count]
-    with open(args.output, "w", encoding="utf-8") as f:
-        for rec in all_records:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-
-    print(f"\nDone! {len(all_records)} records saved to {args.output}")
+    total = existing_count + len(all_records)
+    print(f"\nDone! {total} records saved to {args.output}")
     lang_counts = {}
     for rec in all_records:
         inst = rec.get("instruction", "")
@@ -228,7 +240,7 @@ def main():
         else:
             tag = "english"
         lang_counts[tag] = lang_counts.get(tag, 0) + 1
-    print(f"Language breakdown: {lang_counts}")
+    print(f"Language breakdown (this run): {lang_counts}")
 
 
 if __name__ == "__main__":
