@@ -1,95 +1,174 @@
 # Indic Instructor
 
-Instruction-tune **Sarvam-1 (2B)** for Hinglish, Hindi, and English instruction following using synthetic data from **NVIDIA Nemotron-Super 49B v1.5**.
+Fine-tune **[Sarvam-1](https://huggingface.co/sarvamai/sarvam-1)** (2B) so it follows instructions in **Hinglish**, **Hindi (Devanagari)**, and **English**.
 
-## Dataset
+| | |
+|--|--|
+| **Teacher data** | [NVIDIA Nemotron-Super 49B](https://build.nvidia.com/) via NIM (OpenAI-compatible API) |
+| **Training** | Unsloth 4-bit + LoRA SFT |
+| **Serving** | FastAPI · vLLM (GPU) or Hugging Face (fallback) · in-memory response cache |
+| **Eval** | BLEU-1 · ROUGE-L · latency / throughput |
 
-Synthetic instruction-output pairs generated via NVIDIA NIM API across 3 languages:
-| Language | Script | Label |
-|----------|--------|-------|
+This repo is **only** for data generation, training, evaluation, and inference. No product apps beyond the model API.
+
+## Current status
+
+| Step | State |
+|------|--------|
+| Synthetic data generator | Ready (`make generate`, supports `--resume`) |
+| Sample data on disk | Partial (~hundreds of pairs; target 15k) |
+| Train / val split | Run `make split` after generation |
+| Real Sarvam-1 LoRA on GPU | Not checked in yet — train on Colab or local CUDA |
+| CPU dry-run path | Works (`make train-dry`, `make eval-dry`) |
+| Serving + cache | Ready (`make serve`) |
+
+Teacher bake-off (see git history): **Nemotron-Super 49B** quality beat smaller / slower alternatives for multilingual instruction pairs.
+
+## Languages
+
+| Language | Script | Generator label |
+|----------|--------|-----------------|
 | Hinglish | Roman | `hinglish` |
 | Hindi | Devanagari | `hi` |
 | English | Latin | `en` |
+
+Tasks in the generator mix: translation, summarization, QA, brainstorming, classification, creative writing, grammar.
 
 ## Pipeline
 
 ```mermaid
 flowchart LR
-    A[NVIDIA NIM API<br/>Nemotron-Super 49B v1.5] -->|generate_instructions.py| B[raw_instructions.jsonl]
+    A[NVIDIA NIM<br/>Nemotron-Super 49B] -->|generate_instructions.py| B[raw_instructions.jsonl]
     B -->|split.py| C[train.jsonl + val.jsonl]
-    C -->|train.py / Unsloth| D[sarvam-1-indic-instructor<br/>LoRA adapter]
-    D -->|benchmark.py| E[Bleu-1 / ROUGE-L / Latency]
-    D -->|serving/app.py| F[FastAPI + vLLM/HF]
+    C -->|train.py / Unsloth| D[sarvam-1-indic-instructor<br/>LoRA]
+    D --> E[eval + compare]
+    D --> F[serving/app.py<br/>vLLM or HF + cache]
 ```
 
-## Quick Start
+## Quick start
 
 ```bash
-# 1. Set up API key
+# Prerequisites: Python 3.10+, CUDA optional (needed for real training)
+
 cp .env.example .env
-# Edit .env with your NVIDIA_API_KEY
+# Set NVIDIA_API_KEY=... from https://build.nvidia.com/nim
 
-# 2. Generate dataset
-make generate
-
-# 3. Split into train/val
+make generate    # default: 15k pairs (long; use --count / --resume on the script)
 make split
-
-# 4. Train (CPU dry-run for verification)
-make train-dry
-
-# 5. Evaluate
+make train-dry   # smoke test without GPU
 make eval-dry
 ```
 
-## Colab Training
+Full GPU train (local):
 
-1. Open `colab_setup.sh` — this is the install script
-2. Push changes to GitHub:
-   ```bash
-   git add -A && git commit -m "message" && git push
-   ```
-3. In Colab:
-   ```python
-   !git clone https://github.com/<your-org>/sarvam-1-indic-instructor
-   %cd sarvam-1-indic-instructor
-   !bash setup/colab_setup.sh
-   !python training/train.py
-   ```
+```bash
+make train
+# writes models/sarvam-1-indic-instructor/
+```
 
-> **Before training:** Delete `unsloth_compiled_cache/` if it exists from a previous run to avoid pickle errors.
+### Colab
+
+```python
+!git clone https://github.com/anmolsharma152/sarvam-1-indic-instructor
+%cd sarvam-1-indic-instructor
+!bash setup/colab_setup.sh
+!python training/train.py
+```
+
+Delete `unsloth_compiled_cache/` between Colab runs if you hit Unsloth pickle errors.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `make generate` | Generate 15K instruction records |
-| `make split` | Split into train.jsonl / val.jsonl |
-| `make train-dry` | CPU dry-run with tiny-random-gpt2 |
-| `make train` | Full GPU training (requires CUDA) |
-| `make eval-dry` | CPU dry-run evaluation |
-| `make eval` | Full evaluation on trained model |
-| `make serve` | Start FastAPI inference server |
-| `make clean` | Remove generated data, models, logs |
+| `make generate` | Generate instruction JSONL (15k default) |
+| `make split` | 90/10 → `data/train.jsonl`, `data/val.jsonl` |
+| `make train-dry` | CPU dry-run (tiny GPT-2) |
+| `make train` | Full Unsloth LoRA on CUDA |
+| `make train-colab` | Explicit Colab-friendly flags |
+| `make eval-dry` / `make eval` | Quality + latency on val samples |
+| `make compare-dry` / `make compare` | Base vs fine-tuned charts under `benchmarks/results/` |
+| `make serve` | Inference API on `127.0.0.1:8000` |
+| `make clean` | Drop generated data, models, logs, caches |
 
-## Model Card
+Override paths:
 
-| Metric | Base Sarvam-1 | Fine-tuned Sarvam-1 |
-|--------|:-------------:|:-------------------:|
-| BLEU-1 | N/A | ~40+ |
-| ROUGE-L | N/A | TBD |
-| Instruction following | ~5% | ~85% |
+```bash
+make train ADAPTER=models/my-run
+make serve MODEL=sarvamai/sarvam-1 ADAPTER=models/sarvam-1-indic-instructor
+```
 
-## Files
+## Serving
 
-| Path | Purpose |
-|------|---------|
-| `data/generate_instructions.py` | Generate synthetic instructions via NVIDIA NIM |
-| `data/split.py` | Train/val split |
-| `training/train.py` | Unsloth LoRA fine-tuning (GPU) + dry-run (CPU) |
-| `eval/benchmark.py` | Instruction-following eval with BLEU-1, ROUGE-L, latency |
-| `serving/app.py` | FastAPI server (vLLM + HF fallback) |
-| `setup/colab_setup.sh` | Colab install script (2-step: Unsloth → project deps) |
-| `.env.example` | Template for `NVIDIA_API_KEY` |
-| `Makefile` | Common task automation |
-| `run_pipeline.sh` | End-to-end pipeline script |
+```bash
+make serve
+
+# or
+cd serving && python app.py \
+  --model sarvamai/sarvam-1 \
+  --adapter ../models/sarvam-1-indic-instructor \
+  --cache_size 256 \
+  --host 127.0.0.1 --port 8000
+```
+
+| Method | Path | Notes |
+|--------|------|--------|
+| `POST` | `/generate` | Full completion; **LRU-cached** by prompt + sampling params |
+| `POST` | `/stream` | SSE tokens; not cached |
+| `GET` | `/health` | Engine, device, cache hit/miss stats |
+| `POST` | `/cache/clear` | Flush cache |
+
+- **vLLM** is used when CUDA + vLLM are available and **no** LoRA adapter path is set (use a **merged** 16-bit export for vLLM).
+- **HF + PEFT** is used when `--adapter` points at a LoRA directory, or on CPU / with `--force_hf`.
+
+Train also exports `models/sarvam-1-indic-instructor-merged-16bit/` when Unsloth runs on GPU.
+
+Example request:
+
+```bash
+curl -s http://127.0.0.1:8000/generate \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"2+2 kya hai?","max_tokens":64,"temperature":0.2}'
+```
+
+## Evaluation metrics
+
+After a real train + val set:
+
+```bash
+make eval
+make compare
+```
+
+| Metric | Meaning |
+|--------|---------|
+| BLEU-1 | Unigram overlap vs reference (simple smoke metric) |
+| ROUGE-L | LCS-based F1 vs reference |
+| Latency / tok/s / TTFT | Serving cost |
+
+Fill real base vs fine-tuned numbers into your notes from `eval/results.json` and `benchmarks/results/` — do not invent scores.
+
+## Repository layout
+
+```text
+data/                 # generate_instructions.py, split.py, JSONL
+training/             # Unsloth SFT (train.py), ChatML utils
+eval/                 # benchmark.py
+benchmarks/           # compare.py → results/
+serving/              # FastAPI app + schemas
+setup/colab_setup.sh  # Colab install
+docs/                 # scope + Unsloth training notes
+Makefile              # generate / train / eval / serve
+run_pipeline.sh       # generate + split
+```
+
+## Stack details
+
+- **LoRA:** `r=16`, `alpha=32`; Unsloth targets `q/k/v/o` + `gate/up/down_proj`
+- **Chat template:** ChatML (`<|im_start|>user/assistant`)
+- **Tracking:** Weights & Biases (offline if `WANDB_API_KEY` unset)
+- **Secrets:** `.env` with `NVIDIA_API_KEY` (see `.env.example`)
+
+## License / model card
+
+Base weights: [sarvamai/sarvam-1](https://huggingface.co/sarvamai/sarvam-1) — respect Sarvam’s license when redistributing adapters or merges.
