@@ -24,6 +24,11 @@ tqdm>=4.65.0
 # Visualization and Benchmarking
 matplotlib>=3.7.0
 
+# Serving
+fastapi>=0.110.0
+uvicorn>=0.27.0
+pydantic>=2.0.0
+
 # Unsloth fast LoRA training + inference kernels
 unsloth>=2024.11.0
 xformers>=0.0.27
