@@ -39,3 +39,6 @@ logs/
 # Local agent tooling (not product code)
 .agents/
 .commandcode/
+
+# Local NIM bench dumps (not training artifacts)
+data/_nim_bench*.jsonl
