@@ -2,6 +2,15 @@
 
 Fine-tune **[Sarvam-1](https://huggingface.co/sarvamai/sarvam-1)** (2B) so it follows instructions in **Hinglish**, **Hindi (Devanagari)**, and **English**.
 
+
+## Docs
+
+| Doc | Purpose |
+|-----|---------|
+| **[docs/STATUS.md](./docs/STATUS.md)** | Handoff status |
+| [docs/setup.md](./docs/setup.md) | Setup |
+| [AGENTS.md](./AGENTS.md) | Agent guidance |
+
 | | |
 |--|--|
 | **Teacher data** | [NVIDIA Nemotron-Super 49B](https://build.nvidia.com/) via NIM (OpenAI-compatible API) |
