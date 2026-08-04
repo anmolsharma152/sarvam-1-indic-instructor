@@ -22,11 +22,6 @@ wandb/
 # Local model checkpoint saves
 models/
 
-# Generated dataset files
-data/raw_instructions.jsonl
-data/train.jsonl
-data/val.jsonl
-
 # Unsloth JIT compilation cache
 unsloth_compiled_cache/
 
