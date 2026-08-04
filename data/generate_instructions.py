@@ -64,56 +64,89 @@ SEED_TASKS = {
 }
 
 
-def build_client():
-    api_key = os.environ.get("NVIDIA_API_KEY")
-    if not api_key:
+def build_clients():
+    keys_str = os.environ.get("NVIDIA_API_KEY")
+    if not keys_str:
         raise ValueError(
-            "NVIDIA_API_KEY not set. Get one at https://build.nvidia.com/nim"
+            "NVIDIA_API_KEY not set. Get one at https://build.nvidia.com/nim (comma-separated for multiple keys)"
         )
-    return OpenAI(
-        base_url="https://integrate.api.nvidia.com/v1",
-        api_key=api_key,
-    )
+    keys = [k.strip() for k in keys_str.split(",") if k.strip()]
+    return [
+        OpenAI(
+            base_url="https://integrate.api.nvidia.com/v1",
+            api_key=k,
+        ) for k in keys
+    ]
 
 
-def fetch_single_record(client, model: str, seed: str, temperature: float) -> dict | None:
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a dataset generator. Generate one instruction-output pair "
-                        "in the specified language and script. "
-                        "Output ONLY valid JSON with keys 'instruction' and 'output'. "
-                        "The 'output' value MUST be a plain string (text only), not a JSON object or array. "
-                        "Use Hinglish (Hindi+English mix in Roman script), Hindi (Devanagari), "
-                        "or English as requested."
-                    ),
-                },
-                {"role": "user", "content": seed},
-            ],
-            temperature=temperature,
-            max_tokens=512,
-        )
-        text = resp.choices[0].message.content.strip()
-        record = try_parse_json(text)
-        if record and "instruction" in record and "output" in record:
-            return record
-        else:
-            print(f"  [warn] Failed to parse: {text[:80]}...")
-            return None
-    except Exception as e:
-        print(f"  [error] {e}")
-        time.sleep(2)
-        return None
+def fetch_single_record(clients: list, model: str, seed: str, temperature: float, start_idx: int = 0) -> dict | None:
+    """Fetch one record, rotating through all clients on 429 before backing off."""
+    import random
+    n = len(clients)
+    max_rounds = 3  # rotate through all keys this many times before giving up
+    base_sleep = 1
+    attempt = 0
+
+    for round_ in range(max_rounds):
+        for key_offset in range(n):
+            client = clients[(start_idx + key_offset) % n]
+            try:
+                resp = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are a dataset generator. Generate one instruction-output pair "
+                                "in the specified language and script. "
+                                "Output ONLY valid JSON with keys 'instruction' and 'output'. "
+                                "The 'output' value MUST be a plain string (text only), not a JSON object or array. "
+                                "Use Hinglish (Hindi+English mix in Roman script), Hindi (Devanagari), "
+                                "or English as requested."
+                            ),
+                        },
+                        {"role": "user", "content": seed},
+                    ],
+                    temperature=temperature,
+                    max_tokens=512,
+                )
+                text = resp.choices[0].message.content.strip()
+                record = try_parse_json(text)
+                if record and "instruction" in record and "output" in record:
+                    return record
+                else:
+                    print(f"  [warn] Failed to parse: {text[:80]}...")
+                    return None  # bad output, not a rate limit — don't retry
+            except Exception as e:
+                error_str = str(e)
+                if "429" in error_str or "Too Many Requests" in error_str:
+                    # Rotate to next key immediately; only sleep after exhausting all keys
+                    if key_offset < n - 1:
+                        continue  # try next key right away
+                    else:
+                        # All keys exhausted in this round — back off before next round
+                        sleep_time = base_sleep * (2 ** round_) + random.uniform(0, 1)
+                        print(f"  [warn] All keys rate-limited, sleeping {sleep_time:.1f}s (round {round_+1}/{max_rounds})...")
+                        time.sleep(sleep_time)
+                        attempt += 1
+                elif "502" in error_str or "500" in error_str:
+                    time.sleep(2)
+                    continue
+                else:
+                    print(f"  [error] {e}")
+                    return None
+
+    print("  [error] All keys exhausted after max rounds, skipping record.")
+    return None
 
 
-def generate_batch(client, model: str, seed_prompts: list[str], temperature: float = 0.8, workers: int = 10) -> list[dict]:
+def generate_batch(clients: list, model: str, seed_prompts: list[str], temperature: float = 0.8, workers: int = 10) -> list[dict]:
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {executor.submit(fetch_single_record, client, model, seed, temperature): seed for seed in seed_prompts}
+        futures = {
+            executor.submit(fetch_single_record, clients, model, seed, temperature, i % len(clients)): seed
+            for i, seed in enumerate(seed_prompts)
+        }
         for future in concurrent.futures.as_completed(futures):
             record = future.result()
             if record:
@@ -205,7 +238,7 @@ def main():
             return
         print(f"Resuming: {existing_count} records exist, generating {args.count - existing_count} more")
 
-    client = build_client()
+    clients = build_clients()
 
     seed_prompts = build_seed_prompts(args.count, args.languages, args.scripts)
 
@@ -218,7 +251,7 @@ def main():
     with open(args.output, "a", encoding="utf-8") as f:
         for i in range(0, len(seed_prompts), args.batch_size):
             batch = seed_prompts[i : i + args.batch_size]
-            records = generate_batch(client, args.model, batch, args.temperature, args.workers)
+            records = generate_batch(clients, args.model, batch, args.temperature, args.workers)
             for rec in records:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 f.flush()

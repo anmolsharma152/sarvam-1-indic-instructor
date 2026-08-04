@@ -48,7 +48,7 @@ serve:
 # ─── Utility ─────────────────────────────────────────────────────────────────
 
 clean:
-	rm -rf data/raw_instructions.jsonl data/train.jsonl data/val.jsonl
+	rm -rf data/train.jsonl data/val.jsonl
 	rm -rf models/
 	rm -rf eval/results.json
 	rm -rf benchmarks/results/
